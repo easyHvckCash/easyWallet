@@ -1,0 +1,21 @@
+# Build artifacts
+/target/
+/dist/
+
+# Runtime data
+*.db
+*.db-journal
+files/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

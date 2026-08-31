@@ -1,0 +1,481 @@
+{
+  "coldcard": {
+    "vendor": "Coinkite",
+    "product": "Coldcard Hardware Wallet",
+    "sourcecode": "targets/coldcard/firmware-d1f5852d9cb53d12f8254dc8fc9bb7938847fa77/",
+    "poc_base_dir": "targets/coldcard/poc/",
+    "intersection_proof": {
+      "claim": "M_dice ∩ M_yasmarang = ∅",
+      "reason": "f_dice SHA256 input: variable-length ASCII {0x31..0x36}^n; f_yas SHA256 input: fixed 32-byte full-range binary. Structurally incompatible, collision probability < 2^{-128}"
+    },
+    "math_proof_dice": {
+      "theorem": "When user rolls dice only N times, the effective entropy of mnemonic set M_N is H = N·log2(6) ≈ 2.585N bit",
+      "proof": [
+        "1. import_from_dice(rolls) accepts rolls ∈ {1..6}^N, no minimum length restriction",
+        "2. entropy = SHA256(b'' + ascii(rolls)), where ascii('1')=0x31..ascii('6')=0x36",
+        "3. SHA256 as collision-resistant hash, different inputs produce different outputs (probability 1 - 2^{-128})",
+        "4. Input space |{1..6}^N| = 6^N, therefore |M_N| = 6^N",
+        "5. H_eff(N) = log2(6^N) = N·log2(6) ≈ 2.585N bit",
+        "6. N=1: H=2.585bit; N=10: H=25.85bit; N=50: H=129.25bit (security threshold)"
+      ],
+      "qed": "When N<50, H < 128 bit, does not meet BIP-39 security requirement; device should enforce N≥50"
+    },
+    "math_proof_yasmarang": {
+      "theorem": "When Mk3 firmware erroneously links yasmarang, mnemonic set |M| ≤ 2^32",
+      "proof": [
+        "1. MICROPY_HW_ENABLE_RNG=0 causes rng_get() to link MicroPython yasmarang PRNG",
+        "2. yasmarang internal state: (pad, n, d) initialized to (pad_init, 0, 0)",
+        "3. pad_init ∈ [0, 2^32), the only free parameter",
+        "4. make_new_wallet() calls my_random_bytes(32) → 8 rng_get() calls",
+        "5. MicroPython yasmarang output 32 bit × 8 = 256 bit, entirely determined by pad_init",
+        "6. libngu yasmarang output is also deterministic (no true random seed internally)",
+        "7. final_entropy = XOR(mpy_yas_output, libngu_yas_output), both deterministic",
+        "8. mnemonic = BIP39(SHA256(final_entropy)), deterministic function chain",
+        "9. |M| ≤ |{pad_init}| = 2^32, H_eff ≤ 32 bit"
+      ],
+      "qed": "Affected Mk3 device mnemonics can be recovered within 2^32 brute-force attempts (~7min @10M/s)"
+    },
+    "pocs": [
+      {
+        "id": "dice_no_floor",
+        "public": true,
+        "name": "Dice path no entropy floor",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "Mk2",
+          "Mk3",
+          "Mk4",
+          "Mk5",
+          "Q"
+        ],
+        "disclosure_status": "Undisclosed",
+        "is_fixed": false,
+        "severity": "defense-in-depth failure",
+        "mathpoc": {
+          "set": "M = { BIP39( SHA256( concat(d_1..d_n) ) ) | d_i ∈ {1..6}, 1 ≤ n ≤ N }",
+          "function": "f(rolls) = BIP39( SHA256( b'' || ascii(rolls) ) )",
+          "input_space": "Σ_{n=1}^{N} 6^n",
+          "effective_entropy": "2.585N bit",
+          "key_insight": "Pure function, no RNG, input entirely determined by user dice characters"
+        },
+        "vulnerability": {
+          "root_cause": "import_from_dice() allows generating wallet with just 1 dice roll, no TRNG mixed in",
+          "affected_functions": [
+            "shared/seed.py::import_from_dice()",
+            "shared/paper.py::use_dice()"
+          ]
+        },
+        "exploitation": {
+          "method": "Brute-force dice combinations → SHA256 → BIP39 → PBKDF2 → address matching",
+          "performance": {
+            "python": "~1400/s",
+            "c_8core": "~1.12M/s"
+          },
+          "time_c_8core": {
+            "N=10": "10min",
+            "N=12": "6h",
+            "N=15": "5.7d"
+          }
+        },
+        "fix_suggestion": "Hard reject when count < 50",
+        "generation_speed": "~50,000/s",
+        "coverage_time_range": "2017 ~ present",
+        "note": "all firmware versions"
+      },
+      {
+        "id": "yasmarang_bypass",
+        "public": true,
+        "name": "TRNG erroneously linked to yasmarang (public vulnerability reproduction)",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "Mk3"
+        ],
+        "disclosure_status": "2026-07-30 Block Engineering public disclosure",
+        "is_fixed": true,
+        "severity": "critical (~594 BTC stolen)",
+        "mathpoc": {
+          "set": "M = { BIP39( SHA256( MpyYas(p) ⊕ LibnguYas() ) ) | p ∈ [0, 2^32) }",
+          "function": "f(pad) = BIP39( SHA256( XOR_{i=0}^{7}( MpyYas_i(pad), LibnguYas_i() ) ) )",
+          "input_space": "2^32",
+          "effective_entropy": "32 bit",
+          "key_insight": "TRNG replaced by MicroPython yasmarang, output determined by 32-bit pad"
+        },
+        "vulnerability": {
+          "root_cause": "MICROPY_HW_ENABLE_RNG=0 causes rng_get() to link MicroPython yasmarang",
+          "affected_functions": [
+            "shared/seed.py::make_new_wallet()",
+            "libngu/ngu/random.c::my_random_bytes()"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate 2^32 pad initial states → deterministic mnemonic computation",
+          "performance": {
+            "python": "~2000/s (SHA256 only)"
+          }
+        },
+        "source_reference": "https://github.com/nwfella/coldcard-entropy-incident",
+        "generation_speed": "~40,000/s",
+        "coverage_time_range": "2019 ~ 2020",
+        "note": "Mk3 specific firmware build"
+      }
+    ]
+  },
+  "bitaddress": {
+    "vendor": "bitaddress.org",
+    "product": "bitaddress.org Paper Wallet Generator",
+    "sourcecode": "targets/bitaddress/",
+    "math_proof": {
+      "theorem": "In browsers without WebCrypto, the private key set K generated by bitaddress.org has cardinality |K| ≤ 2^31",
+      "proof": [
+        "1. Let IE JScript Math.random() internal state be s ∈ [0, 2^31), LCG: s' = (214013·s + 2531011) mod 2^31",
+        "2. SecureRandom pool initialization calls Math.random() 128 times, each taking floor(65536·output)",
+        "3. Since LCG is a deterministic function, 128 outputs are entirely determined by initial state s_0: pool = g(s_0)",
+        "4. ARC4.init(pool) is a deterministic function of pool: arc4_state = h(pool) = h(g(s_0))",
+        "5. privkey = (ARC4.next()^32 mod (n-1)) + 1, a deterministic function of arc4_state",
+        "6. Therefore privkey = f(s_0), the entire mapping f: [0, 2^31) → secp256k1 is deterministic",
+        "7. |K| = |Im(f)| ≤ |Dom(f)| = 2^31 ≈ 2.15×10^9",
+        "8. Effective entropy H_eff = log2(|K|) ≤ 31 bit ≪ 128 bit (BIP security threshold)"
+      ],
+      "qed": "Any private key generated by bitaddress.org without WebCrypto can be brute-forced within 2^31 attempts"
+    },
+    "pocs": [
+      {
+        "id": "randstorm_ie",
+        "public": true,
+        "name": "bitaddress.org Randstorm (IE LCG 32-bit)",
+        "output_type": "privkey",
+        "affected_versions": [
+          "2011-2013"
+        ],
+        "disclosure_status": "2023 Unciphered public disclosure",
+        "is_fixed": true,
+        "severity": "critical (31 bit effective entropy)",
+        "mathpoc": {
+          "set": "K = { f(s) | s ∈ [0, 2^31) } where f(s) = mod( int(ARC4(LCG_pool(s))[0:32]), n-1 ) + 1",
+          "function": "f(s₀) = (Σᵢ ARC4(g(s₀)).next()ᵢ · 256^(31-i)) mod (n-1) + 1",
+          "input_space": "2^31 (IE JScript LCG state space)",
+          "effective_entropy": "31 bit",
+          "key_insight": "Without WebCrypto, ARC4 pool is entirely filled by Math.random() (31-bit LCG state); seedTime()/entropyStr are known constants for same device+time window",
+          "enumeration_complexity": "O(2^31) ≈ 7min @10M/s (GPU)"
+        },
+        "vulnerability": {
+          "root_cause": "SecureRandom falls back to Math.random() when window.crypto.getRandomValues unavailable (IE<11, Safari<6)",
+          "affected_functions": [
+            "securerandom.js::pool init (lines 131-149)",
+            "securerandom.js::nextBytes (line 43)"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate LCG seed → build ARC4 pool → generate private key → derive address and match",
+          "performance": {
+            "python": "~5000/s",
+            "c_optimized": "~10M/s"
+          }
+        },
+        "source_reference": "https://www.unciphered.com/disclosure-of-vulnerable-bitcoin-wallet-library-2/",
+        "generation_speed": "~8,000/s",
+        "coverage_time_range": "2011 ~ 2013",
+        "note": "browsers without WebCrypto"
+      }
+    ]
+  },
+  "trust_wallet_core": {
+    "vendor": "Trust Wallet",
+    "product": "Trust Wallet Browser Extension (WASM)",
+    "sourcecode": "targets/trust_wallet_core/",
+    "math_proof": {
+      "theorem": "Trust Wallet WASM extension (v0.0.172-v0.0.182) mnemonic set M has cardinality |M| ≤ 2^32",
+      "proof": [
+        "1. random_buffer(buf, 16) creates mt19937 rng(std::random_device{}())",
+        "2. std::random_device{}() returns uint32_t seed ∈ [0, 2^32)",
+        "3. mt19937 initialization: MT[0] = seed; MT[i] = f(MT[i-1], i) for i=1..623",
+        "4. The entire 624×32-bit internal state is uniquely determined by a single 32-bit seed",
+        "5. generate_n(buf, 16, [&rng]{ return rng() & 0xFF; }) takes low 8 bits of first 16 twist outputs",
+        "6. entropy[16] = g(seed), where g: uint32 → byte[16] is a deterministic function",
+        "7. mnemonic = BIP39(entropy) is a deterministic mapping",
+        "8. Therefore mnemonic = BIP39(g(seed)), complete mapping h: [0, 2^32) → Mnemonic_12word",
+        "9. |M| = |Im(h)| ≤ 2^32 ≈ 4.29×10^9",
+        "10. Effective entropy H_eff = log2(|M|) ≤ 32 bit ≪ 128 bit (BIP-39 standard)"
+      ],
+      "qed": "Any 12-word mnemonic generated by affected versions can be brute-forced within 2^32 attempts"
+    },
+    "pocs": [
+      {
+        "id": "tw_wasm_mt19937",
+        "public": true,
+        "name": "Trust Wallet WASM MT19937 weak seed (CVE-2023-31290)",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "v0.0.172 ~ v0.0.182"
+        ],
+        "disclosure_status": "2023-04 CVE-2023-31290 public disclosure",
+        "is_fixed": true,
+        "severity": "critical (32 bit effective entropy)",
+        "mathpoc": {
+          "set": "M = { BIP39( [mt19937(s).next() & 0xFF]₁₆ ) | s ∈ [0, 2^32) }",
+          "function": "h(s) = BIP39( concat( mt19937(s).output(i) & 0xFF, i=0..15 ) )",
+          "input_space": "2^32 (std::random_device seed space)",
+          "effective_entropy": "32 bit",
+          "key_insight": "WASM random_buffer() creates new mt19937(single 32-bit seed) each call, 16-byte output entirely determined by that seed",
+          "enumeration_complexity": "O(2^32) ≈ 9min @8000/s (Python), 86s @50M/s (C)"
+        },
+        "vulnerability": {
+          "root_cause": "wasm/src/Random.cpp creates new mt19937 each random_buffer() call, using only the 32-bit return of std::random_device{}() as seed",
+          "affected_functions": [
+            "wasm/src/Random.cpp::random_buffer()",
+            "trezor-crypto/crypto/bip39.c::mnemonic_generate()"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate 2^32 seeds → mt19937 → take low 8 bits × 16 → BIP39 → address matching",
+          "performance": {
+            "python": "~8000/s",
+            "c_optimized": "~50M/s"
+          }
+        },
+        "source_reference": "https://blog.secbit.io/p/trust-wallet-vulnerability-analysis/",
+        "generation_speed": "~30,000/s",
+        "coverage_time_range": "2022-11 ~ 2023-04",
+        "note": "browser extension v0.0.172 ~ v0.0.182"
+      },
+      {
+        "id": "tw_ios_minstd",
+        "public": true,
+        "name": "Trust Wallet iOS minstd_rand0 LCG (CVE-2024-23660)",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "iOS v0.0.4"
+        ],
+        "disclosure_status": "2024-01 milksad.info Update #5 public disclosure",
+        "is_fixed": true,
+        "severity": "critical (31 bit effective entropy, 2023-07 exploited)",
+        "mathpoc": {
+          "set": "M = { BIP39( [minstd_rand0(t).next()&0xFF]₁₆ ) | t ∈ [1, 2^31-1) }",
+          "function": "f(t) = BIP39( bytes([LCG16807(t)[i] & 0xFF for i in 1..16]) )",
+          "input_space": "2^31 - 1 (full search) or ~23.7M (time window 2018-03~12)",
+          "effective_entropy": "31 bit (full search) / 24.5 bit (time window)",
+          "key_insight": "srand(time(NULL)) initializes Apple libc minstd_rand0; rand()&0xFF used directly as BIP39 entropy",
+          "enumeration_complexity": "O(2^31) ≈ 2h @315K/s (pure Python), O(23.7M) ≈ 75s (time window)"
+        },
+        "vulnerability": {
+          "root_cause": "iOS app misuses trezor-crypto, seeding non-cryptographic LCG with srand(time(NULL)) to generate BIP39 entropy",
+          "affected_functions": [
+            "random_buffer() is overridden to use rand()&0xFF",
+            "mnemonic_generate(128)"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate timestamps/full state → minstd_rand0 → take low 8 bits × 16 → BIP39 → address matching",
+          "performance": {
+            "python": "~315K/s",
+            "c_optimized": "~10M/s"
+          }
+        },
+        "source_reference": "https://milksad.info/posts/research-update-5/",
+        "generation_speed": "~40,000/s",
+        "coverage_time_range": "2018-03 ~ 2018-12",
+        "note": "iOS v0.0.4"
+      }
+    ]
+  },
+  "cryptojs": {
+    "vendor": "brix/crypto-js (+ downstream forks)",
+    "product": "CryptoJS Library WordArray.random()",
+    "sourcecode": "https://github.com/brix/crypto-js",
+    "math_proof": {
+      "theorem": "128-bit entropy generated by CryptoJS 3.x WordArray.random(16) has effective search space |S| ≤ 2^40",
+      "proof": [
+        "1. WordArray.random(16) generates 4 32-bit words, loops 4 times",
+        "2. First round: m_w_init = Math.random() * 0x100000000, effective 32 bits",
+        "3. Each round creates MWC(m_w_init), called 2 times: 1st computes rcache, 2nd computes output word",
+        "4. Each call appends Math.random() > 0.5 check, introducing 1 bit sign",
+        "5. Subsequent rounds: m_w_init deterministically derived from rcache, no new independent entropy",
+        "6. Total independent parameters: 1 seed (32 bit) + 8 sign bits (4 rounds × 2 calls) = 40 bit",
+        "7. Some sign combinations produce collisions (sign ineffective when MWC output=0), actual |S| ≈ 2^39",
+        "8. H_eff ≈ 39-40 bit ≪ 128 bit (BIP-39 security threshold)"
+      ],
+      "qed": "Any 12-word BIP39 mnemonic generated by CryptoJS 3.x can be brute-forced within ~2^39 attempts"
+    },
+    "pocs": [
+      {
+        "id": "ill_bloom",
+        "public": true,
+        "name": "CryptoJS Ill Bloom MWC weak PRNG (CVE-2026-71851)",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "3.1.2-4 ~ 3.x (except 3.2.0/3.2.1)",
+          "ferrumnet/bip39 fork"
+        ],
+        "disclosure_status": "2026-07-06 Coinspect/Ill Bloom public disclosure",
+        "is_fixed": true,
+        "severity": "critical (39-40 bit effective entropy, $5M+ stolen)",
+        "mathpoc": {
+          "set": "M = { BIP39( MWC_128(seed, signs) ) | seed ∈ [0,2^32), signs ∈ [0,256) }",
+          "function": "f(seed, signs) = BIP39( WordArray.random_MWC(seed, signs)[0:16] )",
+          "input_space": "2^40 (32-bit seed × 8-bit sign choices)",
+          "effective_entropy": "~39 bit (sign collisions reduce from 2^40)",
+          "key_insight": "MWC determined by single Math.random() seed; subsequent words deterministically chained via rcache; sign bit only 1bit/call",
+          "enumeration_complexity": "O(2^40) ≈ 30h @10K/s (Python), 3h @100K/s (optimized)"
+        },
+        "vulnerability": {
+          "root_cause": "WordArray.random() uses custom MWC PRNG (not cryptographically secure), seeded by 32-bit output of Math.random()",
+          "affected_functions": [
+            "crypto-js/src/core.js::WordArray.random()",
+            "ferrumnet/bip39::generateMnemonic()"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate seed×sign combinations → MWC generates 4 words → BIP39 → address matching",
+          "performance": {
+            "python": "~8000/s",
+            "c_optimized": "~500K/s"
+          }
+        },
+        "source_reference": "https://illbloom.org/articles/cryptojs-vulnerability/",
+        "generation_speed": "~8,000/s",
+        "coverage_time_range": "2012 ~ 2023",
+        "note": "CryptoJS 3.1.2 ~ 3.x"
+      }
+    ]
+  },
+  "python_random": {
+    "vendor": "Python (CPython stdlib)",
+    "product": "random module (MT19937) misused for key generation",
+    "sourcecode": "CPython Lib/random.py + Modules/_randommodule.c",
+    "math_proof": {
+      "theorem": "Private keys generated by getrandbits(256) after random.seed(int(time.time())) have effective search space |K| ≤ T_window",
+      "proof": [
+        "1. random.seed(t) calls init_by_array for integer t, initializing MT19937's 624×32-bit internal state",
+        "2. Initialization is a deterministic function: same t → same internal state → same output sequence",
+        "3. random.getrandbits(256) takes first 8 MT19937 32-bit outputs combined into 256-bit integer",
+        "4. Therefore privkey = f(t), where f: int → [0, 2^256) is a deterministic mapping",
+        "5. If t = int(time.time()), then t ∈ [T_start, T_end), T_window = T_end - T_start",
+        "6. Time window 2009-01-03 to 2015-12-31: T_window = 220,599,895 seconds",
+        "7. |K| ≤ T_window ≈ 2.2×10^8",
+        "8. H_eff = log2(|K|) ≈ 27.7 bit ≪ 128 bit"
+      ],
+      "qed": "Any private key generated by random.seed(timestamp) can be brute-forced in ~20 minutes (@180K/s Python)"
+    },
+    "pocs": [
+      {
+        "id": "mt19937_time_seed",
+        "public": true,
+        "name": "Python random.seed(time) MT19937 weak seed",
+        "output_type": "privkey",
+        "affected_versions": [
+          "N/A (generic misuse pattern)"
+        ],
+        "disclosure_status": "Known generic issue (no specific CVE)",
+        "is_fixed": false,
+        "severity": "critical (27.7 bit effective entropy)",
+        "mathpoc": {
+          "set": "K = { getrandbits(256) after seed(t) | t ∈ [1231006505, 1451606400) }",
+          "function": "f(t) = MT19937_init_by_array(t).output[0:8] as uint256",
+          "input_space": "220,599,895 (second-precision timestamps)",
+          "effective_entropy": "27.7 bit",
+          "key_insight": "Python random is a deterministic PRNG; seed(time.time()) compresses search space to time window in seconds",
+          "enumeration_complexity": "O(2^27.7) ≈ 20min @180K/s (pure Python)"
+        },
+        "vulnerability": {
+          "root_cause": "Developer misuses random module (not cryptographically secure) for private key generation, common in DIY scripts and early tutorials",
+          "affected_functions": [
+            "random.seed(int(time.time()))",
+            "random.getrandbits(256)",
+            "random.randrange(2**256)"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate timestamps → random.seed(ts) → getrandbits(256) → derive address and match",
+          "performance": {
+            "python": "~180K/s",
+            "c_optimized": "~5M/s (MT19937 native)"
+          }
+        },
+        "source_reference": "https://docs.python.org/3/library/random.html#random.seed",
+        "generation_speed": "~50,000/s",
+        "coverage_time_range": "2009 ~ 2015",
+        "note": "early Bitcoin era scripts"
+      }
+    ]
+  },
+  "libbitcoin": {
+    "vendor": "Libbitcoin Institute",
+    "product": "Libbitcoin Explorer (bx seed)",
+    "sourcecode": "https://github.com/libbitcoin/libbitcoin-system/blob/a1b777fc/src/crypto/pseudo_random.cpp",
+    "math_proof": {
+      "theorem": "All mnemonics generated by libbitcoin bx seed have set size |M| ≤ 2^32",
+      "proof": [
+        "1. bx seed calls pseudo_random::fill(), internally uses thread_local std::mt19937",
+        "2. MT19937 seed = static_cast<uint32_t>(high_resolution_clock::now().time_since_epoch().count())",
+        "3. uint32_t truncation: seed ∈ [0, 2^32), only 32 bits",
+        "4. std::mt19937 is deterministic PRNG: seed → completely determined output sequence",
+        "5. bx seed 128 takes low 8 bits of MT output × 16 = 16 bytes entropy",
+        "6. entropy → BIP39 mnemonic is a deterministic mapping",
+        "7. Therefore mnemonic = f(seed), f: [0, 2^32) → Mnemonic_12word",
+        "8. |M| ≤ 2^32, H_eff = 32 bit ≪ 128 bit"
+      ],
+      "qed": "Any 12-word mnemonic generated by bx seed 128 can be brute-forced within 2^32 attempts"
+    },
+    "pocs": [
+      {
+        "id": "milksad_bx_seed",
+        "public": true,
+        "name": "Libbitcoin bx seed MT19937 (Milk Sad CVE-2023-39910)",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "3.0.0 ~ 3.7.0"
+        ],
+        "disclosure_status": "2023-08-08 milksad.info public disclosure",
+        "is_fixed": true,
+        "severity": "critical (32 bit effective entropy, $900K+ stolen, 227K wallets)",
+        "mathpoc": {
+          "set": "M = { BIP39( [MT19937(s)()&0xFF]₁₆ ) | s ∈ [0, 2^32) }",
+          "function": "f(s) = BIP39( bytes([MT19937(s).next() & 0xFF for _ in range(16)]) )",
+          "input_space": "2^32 (uint32_t clock truncation)",
+          "effective_entropy": "32 bit",
+          "key_insight": "std::mt19937 accepts only 32-bit seed; high_resolution_clock truncated by static_cast<uint32_t>",
+          "enumeration_complexity": "O(2^32) ≈ 72min @1M/s (Python+C), 9min @8000/s (pure Python)"
+        },
+        "vulnerability": {
+          "root_cause": "pseudo_random::get_twister() seeds non-cryptographic MT19937 with uint32_t(clock)",
+          "affected_functions": [
+            "libbitcoin-system/src/crypto/pseudo_random.cpp::get_twister()",
+            "libbitcoin-explorer/src/utility.cpp::new_seed()"
+          ]
+        },
+        "exploitation": {
+          "method": "Enumerate 2^32 seeds → MT19937 → take low 8 bits × 16 → BIP39 → address matching",
+          "performance": {
+            "python": "~8000/s",
+            "c_optimized": "~1M/s"
+          }
+        },
+        "source_reference": "https://milksad.info/disclosure.html",
+        "generation_speed": "~30,000/s",
+        "coverage_time_range": "2017 ~ 2023",
+        "note": "libbitcoin-explorer 3.0 ~ 3.7"
+      }
+    ]
+  },
+  "chosen_one": {
+    "vendor": "N/A (True Random)",
+    "product": "Full 2^256 key space random sampling",
+    "pocs": [
+      {
+        "id": "chosen_one",
+        "public": true,
+        "name": "Chosen One — True random BIP-39 over 2^256",
+        "output_type": "mnemonic",
+        "affected_versions": [
+          "N/A"
+        ],
+        "disclosure_status": "N/A (not a vulnerability — pure random lottery)",
+        "is_fixed": false,
+        "severity": "none (2^256 effective entropy — unbreakable by design)",
+        "generation_speed": "~50,000/s",
+        "coverage_time_range": "all time",
+        "note": "full 2^256 key space"
+      }
+    ]
+  }
+}
