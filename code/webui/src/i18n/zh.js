@@ -7,6 +7,7 @@ export default {
     pocs: 'POC 测试',
     about: '必读',
     upload: '数据上传',
+    logout: '退出',
   },
   lang: { toggle: 'English' },
   scanner: {

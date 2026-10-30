@@ -1,5 +1,5 @@
 <template>
-  <div class="layout">
+  <div class="layout" v-if="route.name !== 'login'">
     <header class="app-header">
       <h1 class="logo">easyWallet</h1>
       <nav class="nav-tabs">
@@ -12,7 +12,10 @@
           {{ t(item.label) }}
         </router-link>
       </nav>
-      <button class="lang-btn" @click="toggleLang">{{ t('lang.toggle') }}</button>
+      <div class="header-actions">
+        <button class="lang-btn" @click="toggleLang">{{ t('lang.toggle') }}</button>
+        <button class="lang-btn" @click="doLogout">{{ t('nav.logout') }}</button>
+      </div>
     </header>
     <main class="view-container">
       <router-view v-slot="{ Component }">
@@ -22,14 +25,19 @@
       </router-view>
     </main>
   </div>
+  <router-view v-else />
 </template>
 
 <script setup>
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { useApi } from './composables/useApi'
+import { setAuthed } from './router'
 
 const { t, locale } = useI18n()
 const route = useRoute()
+const router = useRouter()
+const api = useApi()
 
 function isActive(to) {
   if (to === '/') return route.path === '/'
@@ -49,6 +57,12 @@ const navItems = [
 function toggleLang() {
   locale.value = locale.value === 'en' ? 'zh' : 'en'
   localStorage.setItem('dash_lang', locale.value)
+}
+
+async function doLogout() {
+  try { await api.logout() } catch {}
+  setAuthed(false)
+  router.push('/login')
 }
 </script>
 
@@ -102,6 +116,12 @@ function toggleLang() {
   background: var(--accent);
 }
 
+.header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .lang-btn {
   padding: 4px 12px;
   border: 1px solid var(--border);
@@ -110,7 +130,6 @@ function toggleLang() {
   font-size: 0.85rem;
   cursor: pointer;
   color: var(--muted);
-  margin-left: 8px;
   transition: all 0.15s;
 }
 .lang-btn:hover {

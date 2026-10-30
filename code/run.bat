@@ -62,9 +62,8 @@ echo       监听端口: %MASTER_PORT% (集群API + Dashboard)
 echo       Token:    %TOKEN%
 echo.
 
-pushd "%DIST%"
-start "[Master] easyWallet" cmd /c "title [Master] easyWallet && "%EXE_PATH%" --role master --listenon %MASTER_PORT% --token %TOKEN% --user %MASTER_USER% --passwd %MASTER_PASSWD% --depth %DEPTH% && pause"
-popd
+:: 通过 WMI 创建进程，脱离 SSH 会话，断开后继续运行；输出写入 dist\master.log
+powershell -NoProfile -Command "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CurrentDirectory='%DIST%'; CommandLine='cmd /c %EXE_PATH% --role master --listenon %MASTER_PORT% --token %TOKEN% --user %MASTER_USER% --passwd %MASTER_PASSWD% --depth %DEPTH% > %DIST%\master.log 2>&1'} | Out-Null"
 
 :: 等待主节点启动就绪
 echo       等待主节点启动 (3秒)...
@@ -74,13 +73,12 @@ echo.
 
 :: ========== Step 4: 启动子节点 ==========
 echo [4/4] 启动子节点 (Node)...
-echo       连接到: 0.0.0.0:%MASTER_PORT%
+echo       连接到: 127.0.0.1:%MASTER_PORT%
 echo       Token:  %TOKEN%
 echo.
 
-pushd "%DIST%"
-start "[Node-1] easyWallet" cmd /c "title [Node-1] easyWallet && "%EXE_PATH%" --role node --server 0.0.0.0:%MASTER_PORT% --token %TOKEN% --depth %DEPTH% && pause"
-popd
+:: 同上，输出写入 dist\node1.log
+powershell -NoProfile -Command "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CurrentDirectory='%DIST%'; CommandLine='cmd /c %EXE_PATH% --role node --server 127.0.0.1:%MASTER_PORT% --token %TOKEN% --depth %DEPTH% > %DIST%\node1.log 2>&1'} | Out-Null"
 
 echo       [OK] 子节点已启动
 echo.
@@ -90,8 +88,8 @@ echo ============================================
 echo   全部启动完成!
 echo ============================================
 echo.
-echo   Master:    PID 窗口标题 [Master] easyWallet
-echo   Node-1:    PID 窗口标题 [Node-1] easyWallet
+echo   Master:    后台运行，日志 %DIST%\master.log
+echo   Node-1:    后台运行，日志 %DIST%\node1.log
 echo   Dashboard: http://localhost:%MASTER_PORT%/
 echo.
 echo   如需停止，运行: taskkill /F /IM %EXE%
@@ -103,7 +101,6 @@ echo.
 echo ============================================
 echo   启动失败!
 echo ============================================
-pause
 exit /b 1
 
 :end

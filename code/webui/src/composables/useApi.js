@@ -6,6 +6,19 @@ const http = axios.create({
   withCredentials: true,
 })
 
+// Auto-redirect to /login on 401
+http.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    if (err.response && err.response.status === 401) {
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
 export function useApi() {
   // ---- Scanner / Master ----
   const getStatus       = () => http.get('/api/status').then(r => r.data)
@@ -50,6 +63,11 @@ export function useApi() {
   const getUploadStatus  = () => http.get('/api/upload/status').then(r => r.data)
   const triggerUpload    = (fileKey) => http.post('/api/upload/trigger', { file_key: fileKey }).then(r => r.data)
 
+  // ---- Auth ----
+  const login    = (username, password) => http.post('/api/login', { username, password }).then(r => r.data)
+  const logout   = () => http.post('/api/logout').then(r => r.data)
+  const checkAuth = () => http.get('/api/auth/check').then(r => r.data)
+
   return {
     getStatus, getSysinfo, getClusterStatus,
     startDispatch, stopDispatch, exportJson,
@@ -60,5 +78,6 @@ export function useApi() {
     getPocsList, getPocsStatus, startPoc, stopPoc, getPocLog,
     reloadPocs, getReloadInfo, savePocSettings, editPocProgress,
     getUploadConfig, saveUploadConfig, getUploadStatus, triggerUpload,
+    login, logout, checkAuth,
   }
 }

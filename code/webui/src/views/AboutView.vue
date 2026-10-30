@@ -58,7 +58,7 @@
       <div class="donate-addr">33Eow2BuYrqp9AaN23wsgau1uWWTrSrci5</div>
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 6px">{{ t('about.donateNote') }}</p>
       <ol style="font-size: 0.85rem; color: var(--muted); margin-top: 10px; line-height: 1.8; padding-left: 18px">
-        <li v-for="(step, i) in t('about.donateSteps')" :key="i" v-html="step"></li>
+        <li v-for="(step, i) in tm('about.donateSteps')" :key="i" v-html="step"></li>
       </ol>
     </div>
   </div>
@@ -66,7 +66,7 @@
 
 <script setup>
 import { useI18n } from 'vue-i18n'
-const { t } = useI18n()
+const { t, tm } = useI18n()
 </script>
 
 <style scoped>

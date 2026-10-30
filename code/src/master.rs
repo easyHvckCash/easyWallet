@@ -7,10 +7,8 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
-use axum::middleware::Next;
 use axum::{routing::{get, post}, Json, Router};
 use tower_http::services::{ServeDir, ServeFile};
-use base64::Engine as _;
 use dashmap::DashMap;
 use rusqlite::Connection;
 use sysinfo::System;
@@ -119,6 +117,8 @@ pub struct MasterState {
     // Dashboard credentials
     auth_user: String,
     auth_pass: String,
+    // Session store: token -> expiry
+    sessions: std::sync::Mutex<HashMap<String, Instant>>,
     // Data upload config
     upload_configs: std::sync::Mutex<Vec<UploadConfig>>,
     upload_logs: std::sync::Mutex<Vec<UploadLogEntry>>,
@@ -330,6 +330,7 @@ pub async fn run_master(args: Args) {
         bench_task_queue: std::sync::Mutex::new(HashMap::new()),
         auth_user: args.user.clone(),
         auth_pass: args.passwd.clone(),
+        sessions: std::sync::Mutex::new(HashMap::new()),
         upload_configs: std::sync::Mutex::new(load_upload_configs(&scanner_folder)),
         upload_logs: std::sync::Mutex::new(Vec::new()),
     });
@@ -398,12 +399,6 @@ pub async fn run_master(args: Args) {
     axum::serve(listener, app).await.unwrap();
 }
 fn build_router(state: Arc<MasterState>) -> Router {
-    let s = state.clone();
-    let token_layer = axum::middleware::from_fn(move |req, next| {
-        let st = s.clone();
-        token_auth(st, req, next)
-    });
-
     let (s1,s2,s3,s4,s5,s6,s7,s8,s9) = (
         state.clone(),state.clone(),state.clone(),state.clone(),state.clone(),
         state.clone(),state.clone(),state.clone(),state.clone(),
@@ -416,9 +411,15 @@ fn build_router(state: Arc<MasterState>) -> Router {
 
     let (s21,s22,s23,s24,s25,s26,s27,s28,s29) = (state.clone(), state.clone(), state.clone(), state.clone(), state.clone(), state.clone(), state.clone(), state.clone(), state.clone());
     let (s30,s31,s32,s33) = (state.clone(), state.clone(), state.clone(), state.clone());
+    let (s_login, s_logout, s_authcheck) = (state.clone(), state.clone(), state.clone());
 
+    // All routes in a single Router — auth is checked inside each handler via check_session()
     Router::new()
-        // Cluster/node APIs
+        // Public (no auth)
+        .route("/health", get(|| async { "true" }))
+        .route("/api/login", post(move |body: String| api_login(s_login, body)))
+        .route("/api/auth/check", get(move |headers: axum::http::HeaderMap| api_auth_check(s_authcheck, headers)))
+        // Cluster/node APIs (Bearer token auth inside handlers)
         .route("/api/node/register", post(move |body| handle_register(s1, body)))
         .route("/api/node/heartbeat", post(move |body| handle_heartbeat(s2, body)))
         .route("/api/task/pull", post(move |body| handle_task_pull(s3, body)))
@@ -426,7 +427,6 @@ fn build_router(state: Arc<MasterState>) -> Router {
         .route("/api/task/hits", post(move |body| handle_task_hits(s26, body)))
         .route("/api/task/batch_results", post(move |body| handle_batch_results(s5, body)))
         .route("/api/cluster/status", get(move || handle_cluster_status(s6)))
-        // Original panel APIs (adapted to cluster)
         .route("/api/status", get(move || api_status(s10)))
         .route("/api/sysinfo", get(move || api_sysinfo(s11)))
         .route("/api/results", get(move || api_results(s12)))
@@ -452,91 +452,120 @@ fn build_router(state: Arc<MasterState>) -> Router {
         .route("/api/export", post(move || api_export_now(s27)))
         .route("/api/set_queue_limit", post(move |body: String| api_set_queue_limit(s28, body)))
         .route("/api/set_node_limit", post(move |body: String| api_set_node_limit(s29, body)))
-        // Upload APIs
         .route("/api/upload/config", get(move || api_upload_config_get(s30)))
         .route("/api/upload/config/save", post(move |body: String| api_upload_config_save(s31, body)))
         .route("/api/upload/status", get(move || api_upload_status(s32)))
         .route("/api/upload/trigger", post(move |body: String| api_upload_trigger(s33, body)))
-        // Health check (no auth)
-        .route("/health", get(|| async { "true" }))
-        // Vue SPA — serve static files, fallback to index.html for client-side routing
+        .route("/api/logout", post(move |headers: axum::http::HeaderMap| api_logout(s_logout, headers)))
+        // Vue SPA
         .fallback_service(
             ServeDir::new("webui")
                 .not_found_service(ServeFile::new("webui/index.html"))
         )
-        .layer(token_layer)
 }
 
-async fn token_auth(
-    state: Arc<MasterState>,
-    req: Request<Body>,
-    next: Next,
-) -> Response<Body> {
-    let path = req.uri().path().to_string();
-    // Health check — no auth required
-    if path == "/health" {
-        return next.run(req).await;
-    }
-    // Static assets (JS/CSS/images from Vue build) — no auth required
-    if path.starts_with("/assets/") || path.ends_with(".js") || path.ends_with(".css")
-        || path.ends_with(".ico") || path.ends_with(".svg") || path.ends_with(".png")
-        || path.ends_with(".woff") || path.ends_with(".woff2") {
-        return next.run(req).await;
-    }
-    // SPA HTML pages trigger basic auth popup in browser
-    if path == "/" || path == "/bench" || path == "/results"
-        || path == "/stats" || path == "/pocs" || path == "/nodes"
-        || path == "/about" || path == "/upload" || path == "/index.html"
-        || path.starts_with("/panel") {
-        return basic_auth_check(&state, req, next).await;
-    }
-    // API endpoints: accept bearer token OR basic auth
-    if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
+// Session auth check helper — returns None if authorized, Some(error response) if not
+fn check_dashboard_auth(state: &Arc<MasterState>, headers: &axum::http::HeaderMap) -> Option<Json<serde_json::Value>> {
+    // Accept Bearer token (for node-to-master)
+    if let Some(auth) = headers.get(header::AUTHORIZATION) {
         if let Ok(val) = auth.to_str() {
-            if let Some(token) = val.strip_prefix("Bearer ") {
-                if token == state.token {
-                    return next.run(req).await;
+            if let Some(tk) = val.strip_prefix("Bearer ") {
+                if tk == state.token {
+                    return None; // authorized
                 }
             }
-            if let Some(encoded) = val.strip_prefix("Basic ") {
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                    if let Ok(cred) = String::from_utf8(decoded) {
-                        let expected = format!("{}:{}", state.auth_user, state.auth_pass);
-                        if cred == expected {
-                            return next.run(req).await;
+        }
+    }
+    // Accept session cookie (for dashboard)
+    if let Some(cookie_hdr) = headers.get(header::COOKIE) {
+        if let Ok(cookies) = cookie_hdr.to_str() {
+            for part in cookies.split(';') {
+                let p = part.trim();
+                if let Some(tk) = p.strip_prefix("ew_session=") {
+                    let sessions = state.sessions.lock().unwrap();
+                    if let Some(exp) = sessions.get(tk) {
+                        if *exp > Instant::now() {
+                            return None; // authorized
                         }
                     }
                 }
             }
         }
     }
+    Some(Json(serde_json::json!({"ok": false, "error": "Unauthorized"})))
+}
+
+fn generate_session_token() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    Instant::now().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    let r: u64 = hasher.finish();
+    format!("{:016x}{:016x}", r, r.wrapping_mul(6364136223846793005).wrapping_add(1))
+}
+
+async fn api_login(state: Arc<MasterState>, body: String) -> Response<Body> {
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+    let user = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("");
+    let pass = parsed.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if user == state.auth_user && pass == state.auth_pass {
+        let token = generate_session_token();
+        let expiry = Instant::now() + Duration::from_secs(7 * 24 * 3600); // 7 days
+        state.sessions.lock().unwrap().insert(token.clone(), expiry);
+        let cookie = format!("ew_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}", token, 7 * 24 * 3600);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .header(header::SET_COOKIE, cookie)
+            .body(Body::from(r#"{"ok":true}"#))
+            .unwrap()
+    } else {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"ok":false,"error":"Invalid username or password"}"#))
+            .unwrap()
+    }
+}
+
+async fn api_logout(state: Arc<MasterState>, headers: axum::http::HeaderMap) -> Response<Body> {
+    if let Some(cookie_hdr) = headers.get(header::COOKIE) {
+        if let Ok(cookies) = cookie_hdr.to_str() {
+            for part in cookies.split(';') {
+                let p = part.trim();
+                if let Some(tk) = p.strip_prefix("ew_session=") {
+                    state.sessions.lock().unwrap().remove(tk);
+                }
+            }
+        }
+    }
+    let cookie = "ew_session=; Path=/; HttpOnly; Max-Age=0";
     Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(header::WWW_AUTHENTICATE, "Basic realm=\"easyWallet Master\"")
-        .body(Body::from("Unauthorized"))
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header(header::SET_COOKIE, cookie)
+        .body(Body::from(r#"{"ok":true}"#))
         .unwrap()
 }
 
-async fn basic_auth_check(state: &Arc<MasterState>, req: Request<Body>, next: Next) -> Response<Body> {
-    if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
-        if let Ok(val) = auth.to_str() {
-            if let Some(encoded) = val.strip_prefix("Basic ") {
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                    if let Ok(cred) = String::from_utf8(decoded) {
-                        let expected = format!("{}:{}", state.auth_user, state.auth_pass);
-                        if cred == expected {
-                            return next.run(req).await;
+async fn api_auth_check(state: Arc<MasterState>, headers: axum::http::HeaderMap) -> Json<serde_json::Value> {
+    if let Some(cookie_hdr) = headers.get(header::COOKIE) {
+        if let Ok(cookies) = cookie_hdr.to_str() {
+            for part in cookies.split(';') {
+                let p = part.trim();
+                if let Some(tk) = p.strip_prefix("ew_session=") {
+                    let sessions = state.sessions.lock().unwrap();
+                    if let Some(exp) = sessions.get(tk) {
+                        if *exp > Instant::now() {
+                            return Json(serde_json::json!({"ok": true, "user": state.auth_user}));
                         }
                     }
                 }
             }
         }
     }
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(header::WWW_AUTHENTICATE, "Basic realm=\"easyWallet Master\"")
-        .body(Body::from("Unauthorized"))
-        .unwrap()
+    Json(serde_json::json!({"ok": false}))
 }
 
 async fn handle_register(state: Arc<MasterState>, body: String) -> Response<Body> {
