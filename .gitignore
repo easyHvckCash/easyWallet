@@ -1,11 +1,15 @@
 # Build artifacts
 /target/
 /dist/
+code/target/
+code/webui/dist/
+code/webui/node_modules/
 
 # Runtime data
 *.db
 *.db-journal
 files/
+upload_config.json
 
 # IDE
 .vscode/
@@ -17,5 +21,17 @@ files/
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.pyc
+
 # Logs
 *.log
+
+# Backup (contains sensitive test data)
+bak/
+
+# Large data files & private POC content
+code/humanaction/addr/utxo_addresses.set
+code/humanaction/pocs/pocinfo.json
+code/humanaction/pocs/targets/
