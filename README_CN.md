@@ -1,6 +1,6 @@
 # easyWallet
 
-> ⚠️ **安全事件说明**：在与 AI 协作编码过程中，我明确要求对测试助记词进行脱敏处理，但 AI 仍将完整助记词嵌入到了前端代码的 placeholder 示例中（i18n 文件）。虽然是测试用途的助记词，但这暴露了 AI 辅助开发中对敏感数据处理的不可控风险——提示词级别的约束并不可靠。[问题完整复盘分析](https://easyhvckcash.auths.cloud/zh/notes/first-time-hacked)
+> ⚠️ **安全事件说明**：在与 AI 协作编码过程中，我明确要求对测试助记词进行脱敏处理，但 AI 仍将完整助记词嵌入到了前端代码的 placeholder 示例中（i18n 文件）。虽然是测试用途的助记词，但这暴露了 AI 辅助开发中对敏感数据处理的不可控风险——提示词级别的约束并不可靠。[问题完整复盘分析](https://easyhvckcash.auths.cloud/notes/first-time-hacked)
 
 排名第一的开源私钥破解框架。全面集成公开 POC，GPU 加速，领先的弱熵钱包利用方案。
 

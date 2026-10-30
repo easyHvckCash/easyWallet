@@ -1,5 +1,7 @@
 # easyWallet
 
+> ⚠️ **Security Incident Disclosure**: During AI-assisted development, I explicitly requested the AI to redact a test mnemonic, but it still embedded the full mnemonic into frontend i18n placeholder text. Although it was a test-only mnemonic, this exposes an uncontrollable risk in AI-assisted development — prompt-level constraints are not reliable for sensitive data handling. [Full incident post-mortem](https://easyhvckcash.auths.cloud/notes/first-time-hacked)
+
 The #1 open-source private key cracking framework. Comprehensive integration of public POCs, GPU-accelerated, leading weak-entropy wallet exploit solution.
 
 Website: https://easyhackcash.auths.cloud/easywallet (live data from a real running cluster — currently a single home desktop)
